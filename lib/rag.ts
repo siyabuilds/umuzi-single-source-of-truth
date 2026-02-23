@@ -133,14 +133,26 @@ export async function askQuestion(
   // 6. Parse structured response and keep only the sources the LLM declared it used
   const { answer, usedSources } = parseLLMResponse(rawAnswer);
 
-  const citedSources =
+  const matchedSources =
     usedSources.length > 0
       ? relevantChunks.filter((doc) =>
           usedSources.some(
             (title) => title.toLowerCase() === doc.title.toLowerCase(),
           ),
         )
-      : []; // fallback: return all if parsing produced no titles
+      : []; // fallback: return none if parsing produced no titles
+
+  // Deduplicate by title, keeping the chunk with the highest similarity score
+  // (a single document may produce multiple chunks that all match the same title)
+  const seenTitles = new Map<string, SlabContentWithSimilarity>();
+  for (const doc of matchedSources) {
+    const key = doc.title.toLowerCase();
+    const existing = seenTitles.get(key);
+    if (!existing || doc.similarity > existing.similarity) {
+      seenTitles.set(key, doc);
+    }
+  }
+  const citedSources = Array.from(seenTitles.values());
 
   return { answer, sources: citedSources };
 }
