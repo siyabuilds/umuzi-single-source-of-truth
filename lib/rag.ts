@@ -1,9 +1,12 @@
 import { embedText, generateText } from "./gemini";
-import { searchByEmbedding } from "./repositories/slab-content";
+import {
+  searchByEmbedding,
+  getChunksByTitle,
+} from "./repositories/slab-content";
 import type { SlabContentWithSimilarity } from "./db-types";
 
 // Default number of top relevant chunks to retrieve for context. Can be overridden by caller.
-const DEFAULT_TOP_N = 5;
+const DEFAULT_TOP_N = 10;
 
 /**
  * Parse the structured JSON response from the LLM.
@@ -98,7 +101,10 @@ ${question}`;
  * 4. Build a prompt with the retrieved context and generate an answer.
  *
  * @param question  – the user's natural-language question.
- * @param topN      – how many chunks to retrieve (default 5).
+ * @param topN      – how many chunks to retrieve in the initial similarity
+ *                    search (default 10). After retrieval, ALL chunks from
+ *                    every matched document are fetched and included in the
+ *                    prompt (document expansion).
  * @returns The generated answer together with the source chunks used.
  */
 export async function askQuestion(
@@ -111,13 +117,44 @@ export async function askQuestion(
   // 2. Retrieve the most similar chunks from pgvector
   const topChunks = await searchByEmbedding(questionEmbedding, topN);
 
-  // 3. Filter out low-relevance results
+  // 3a. Filter out low-relevance results
   const relevantChunks = topChunks.filter(
     (chunk) => chunk.similarity >= RELEVANCE_THRESHOLD,
   );
 
+  // 3b. Document expansion — for every unique document title surfaced by the similarity search, fetch ALL of its chunks from the database.
+  const uniqueTitles = [...new Set(relevantChunks.map((c) => c.title))];
+  const expansionResults = await Promise.all(
+    uniqueTitles.map((title) => getChunksByTitle(title)),
+  );
+
+  // Merge the expanded chunks with the original results, deduplicating by id.
+  const seenIds = new Set(relevantChunks.map((c) => c.id));
+  const minSimilarityByTitle = new Map<string, number>();
+  for (const c of relevantChunks) {
+    const prev = minSimilarityByTitle.get(c.title) ?? c.similarity;
+    minSimilarityByTitle.set(c.title, Math.min(prev, c.similarity));
+  }
+
+  const expandedChunks: SlabContentWithSimilarity[] = [...relevantChunks];
+  for (const docChunks of expansionResults) {
+    for (const chunk of docChunks) {
+      if (!seenIds.has(chunk.id)) {
+        seenIds.add(chunk.id);
+        expandedChunks.push({
+          ...chunk,
+          similarity:
+            minSimilarityByTitle.get(chunk.title) ?? RELEVANCE_THRESHOLD,
+        });
+      }
+    }
+  }
+
+  // Sort expanded set by similarity descending so the most relevant context appears first in the prompt.
+  expandedChunks.sort((a, b) => b.similarity - a.similarity);
+
   // 4. If nothing relevant was found, return a "no info" answer
-  if (relevantChunks.length === 0) {
+  if (expandedChunks.length === 0) {
     return {
       answer:
         "I couldn't find any relevant information in the knowledge base to answer your question. " +
@@ -127,7 +164,7 @@ export async function askQuestion(
   }
 
   // 5. Build the augmented prompt and generate an answer
-  const prompt = buildPrompt(question, relevantChunks);
+  const prompt = buildPrompt(question, expandedChunks);
   const rawAnswer = await generateText(prompt);
 
   // 6. Parse structured response and keep only the sources the LLM declared it used
@@ -135,7 +172,7 @@ export async function askQuestion(
 
   const matchedSources =
     usedSources.length > 0
-      ? relevantChunks.filter((doc) =>
+      ? expandedChunks.filter((doc) =>
           usedSources.some(
             (title) => title.toLowerCase() === doc.title.toLowerCase(),
           ),
