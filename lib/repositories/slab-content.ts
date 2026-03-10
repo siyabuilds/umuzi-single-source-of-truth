@@ -1,152 +1,136 @@
-import { query } from "../db";
+// Repository for managing Slab/Markdown document chunks in the database.
+// Uses Prisma Client for all database operations instead of raw SQL.
+// Note: embedding_vector uses raw SQL via prisma.$queryRaw because pgvector
+// is not natively supported by Prisma.
+import prisma from "../prisma";
+import type { SlabContent } from "../generated/prisma";
 import type {
-  SlabContent,
   CreateSlabContent,
   SlabContentWithSimilarity,
 } from "../db-types";
 
-// Insert a new slab content record
+// Insert a single slab content record
 export async function insertSlabContent(
   data: CreateSlabContent,
 ): Promise<SlabContent> {
   const { title, chunk_text, embedding_vector, slab_url } = data;
 
-  const result = await query<SlabContent>(
-    `INSERT INTO slab_content (title, chunk_text, embedding_vector, slab_url)
-     VALUES ($1, $2, $3::vector, $4)
-     RETURNING *`,
-    [
-      title,
-      chunk_text,
-      embedding_vector ? `[${embedding_vector.join(",")}]` : null,
-      slab_url,
-    ],
-  );
+  const result = await prisma.$queryRaw<SlabContent[]>`
+    INSERT INTO slab_content (title, chunk_text, embedding_vector, slab_url)
+    VALUES (${title}, ${chunk_text}, ${embedding_vector ? `[${embedding_vector.join(",")}]` : null}::vector, ${slab_url ?? null})
+    RETURNING *
+  `;
 
-  return result.rows[0];
+  return result[0];
 }
 
-// Find slab content by ID
+// Find a single slab content record by ID
 export async function findSlabContentById(
   id: number,
 ): Promise<SlabContent | null> {
-  const result = await query<SlabContent>(
-    "SELECT * FROM slab_content WHERE id = $1",
-    [id],
-  );
-
-  return result.rows[0] || null;
+  return prisma.slabContent.findUnique({
+    where: { id },
+  });
 }
 
-// Search slab content by vector similarity
-// Returns the most similar documents based on cosine similarity
+// Search slab content by vector similarity using cosine distance.
+// Returns the most similar document chunks above the similarity threshold.
 export async function searchByEmbedding(
   embedding: number[],
   limit: number = 5,
 ): Promise<SlabContentWithSimilarity[]> {
   const embeddingStr = `[${embedding.join(",")}]`;
 
-  const result = await query<SlabContentWithSimilarity>(
-    `SELECT *, 1 - (embedding_vector <=> $1::vector) as similarity
-     FROM slab_content
-     WHERE embedding_vector IS NOT NULL
-     ORDER BY embedding_vector <=> $1::vector
-     LIMIT $2`,
-    [embeddingStr, limit],
-  );
-
-  return result.rows;
+  return prisma.$queryRaw<SlabContentWithSimilarity[]>`
+    SELECT *, 1 - (embedding_vector <=> ${embeddingStr}::vector) as similarity
+    FROM slab_content
+    WHERE embedding_vector IS NOT NULL
+    ORDER BY embedding_vector <=> ${embeddingStr}::vector
+    LIMIT ${limit}
+  `;
 }
 
-// Get all slab content (paginated)
+// Get all slab content records with pagination
 export async function getAllSlabContent(
   limit: number = 50,
   offset: number = 0,
 ): Promise<SlabContent[]> {
-  const result = await query<SlabContent>(
-    "SELECT * FROM slab_content ORDER BY created_at DESC LIMIT $1 OFFSET $2",
-    [limit, offset],
-  );
-
-  return result.rows;
+  return prisma.slabContent.findMany({
+    orderBy: { created_at: "desc" },
+    take: limit,
+    skip: offset,
+  });
 }
 
-// Update slab content embedding
+// Update the embedding vector for a slab content record
 export async function updateSlabContentEmbedding(
   id: number,
   embedding: number[],
 ): Promise<SlabContent | null> {
   const embeddingStr = `[${embedding.join(",")}]`;
 
-  const result = await query<SlabContent>(
-    `UPDATE slab_content 
-     SET embedding_vector = $1::vector 
-     WHERE id = $2 
-     RETURNING *`,
-    [embeddingStr, id],
-  );
+  const result = await prisma.$queryRaw<SlabContent[]>`
+    UPDATE slab_content
+    SET embedding_vector = ${embeddingStr}::vector
+    WHERE id = ${id}
+    RETURNING *
+  `;
 
-  return result.rows[0] || null;
+  return result[0] ?? null;
 }
 
-// Delete slab content by ID
+// Delete a slab content record by ID
 export async function deleteSlabContent(id: number): Promise<boolean> {
-  const result = await query("DELETE FROM slab_content WHERE id = $1", [id]);
+  const result = await prisma.slabContent.deleteMany({
+    where: { id },
+  });
 
-  return (result.rowCount ?? 0) > 0;
+  return result.count > 0;
 }
 
-// Bulk insert many content records in a single transaction
+// Bulk insert many content records in a single transaction.
+// Used during ingestion to store all chunks efficiently.
 export async function bulkInsertSlabContent(
   records: CreateSlabContent[],
 ): Promise<number> {
   if (records.length === 0) return 0;
 
-  // Build a parameterised bulk INSERT
-  const values: unknown[] = [];
-  const placeholders: string[] = [];
+  let totalInserted = 0;
 
-  records.forEach((r, idx) => {
-    const offset = idx * 4;
-    placeholders.push(
-      `($${offset + 1}, $${offset + 2}, $${offset + 3}::vector, $${offset + 4})`,
-    );
-    values.push(
-      r.title,
-      r.chunk_text,
-      r.embedding_vector ? `[${r.embedding_vector.join(",")}]` : null,
-      r.slab_url ?? null,
-    );
-  });
-
-  const result = await query(
-    `INSERT INTO slab_content (title, chunk_text, embedding_vector, slab_url)
-     VALUES ${placeholders.join(", ")}`,
-    values,
+  // Use a transaction to insert all records safely one by one
+  await prisma.$transaction(
+    records.map((r) =>
+      prisma.$executeRaw`
+        INSERT INTO slab_content (title, chunk_text, embedding_vector, slab_url)
+        VALUES (
+          ${r.title},
+          ${r.chunk_text},
+          ${r.embedding_vector ? `[${r.embedding_vector.join(",")}]` : null}::vector,
+          ${r.slab_url ?? null}
+        )
+      `,
+    ),
   );
 
-  return result.rowCount ?? 0;
+  totalInserted = records.length;
+  return totalInserted;
 }
-
-// Delete all slab content (useful before a full re-ingest)
+// Delete all slab content records — used before a full re-ingest
 export async function clearAllSlabContent(): Promise<number> {
-  const result = await query("DELETE FROM slab_content");
-  return result.rowCount ?? 0;
+  const result = await prisma.slabContent.deleteMany();
+  return result.count;
 }
 
 // Count total slab content records
 export async function countSlabContent(): Promise<number> {
-  const result = await query<{ count: string }>(
-    "SELECT COUNT(*) as count FROM slab_content",
-  );
-  return parseInt(result.rows[0].count, 10);
+  return prisma.slabContent.count();
 }
 
-// Fetch all chunks that belong to a given document title.
+// Fetch all chunks belonging to a specific document title.
+// Used during document expansion in the RAG pipeline.
 export async function getChunksByTitle(title: string): Promise<SlabContent[]> {
-  const result = await query<SlabContent>(
-    `SELECT * FROM slab_content WHERE title = $1 ORDER BY id ASC`,
-    [title],
-  );
-  return result.rows;
+  return prisma.slabContent.findMany({
+    where: { title },
+    orderBy: { id: "asc" },
+  });
 }
