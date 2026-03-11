@@ -16,7 +16,7 @@ export const genai = new GoogleGenAI({ apiKey });
 export const EMBEDDING_MODEL = "gemini-embedding-001";
 
 // Chat model used for any LLM interactions
-export const CHAT_MODEL = "gemini-2.0-flash";
+export const CHAT_MODEL = "gemini-3-flash-preview";
 
 // Generate a 768-dim embedding vector for a single text input.
 export async function embedText(text: string): Promise<number[]> {
