@@ -21,7 +21,7 @@
   return (
     md
       // 1. Bullets first
-      .replace(/^[ \t]*[-*]\s+/gm, "• ")
+      .replace(/^([ \t]*)[-*]\s+/gm, "$1• ")
 
       // 2. Headings
       .replace(/^#{1,6}\s+(.+)$/gm, "*$1*")
