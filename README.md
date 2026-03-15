@@ -16,15 +16,13 @@ An AI-powered internal knowledge assistant for the Umuzi organisation. It ingest
 | Markdown content fetch and storage               | ✅ Working (104 docs across 6 categories)                                   |
 | Content chunking (section-aware, overlapping)    | ✅ Working (splits on `##` headings, ~550-word target with 75-word overlap) |
 | PostgreSQL + pgvector schema                     | ✅ Migrated                                                                 |
-| Ingestion API route (`POST /api/ingest-markdown`)| ✅ Working (secret-key secured, embeds + stores chunks)                     |
+| Ingestion API route (`POST /api/ingest-markdown`)         | ✅ Working (secret-key secured, embeds + stores chunks)                     |
 | Google Gemini embedding generation               | ✅ Working (`gemini-embedding-001`, 768-dim vectors)                        |
 | Vector similarity search (RAG retrieval)         | ✅ Working (`searchByEmbedding` with cosine similarity, threshold 0.3)      |
 | Document expansion in RAG                        | ✅ Working (fetches all chunks from every matched document)                 |
 | LLM answer generation with cited sources         | ✅ Working (structured JSON response with `used_sources` field)             |
-| Question logging (`questions_asked` table)       | ✅ Working (logged on every `/api/ask` request)                             |
-| Ask API route (`POST /api/ask`)                  | ✅ Working (slash command + JSON; async ACK for Slack 3 s timeout)          |
+| Question logging (`questions_asked` table)       | ✅ Working (logged on every `/api/slack` request)                             |
 | Slack Events API (`POST /api/slack`)             | ✅ Working (`app_mention` in channels + direct messages to Zazu)            |
-| Slack slash command (`/ask`)                     | ✅ Working (fire-and-forget with `response_url` callback)                   |
 | Monthly report (`POST /api/report`)              | ✅ Working (Gemini analysis of last 30 days → posted to Slack channel)      |
 | GitHub Actions — manual re-ingest (`ingest.yml`) | ✅ Working (`workflow_dispatch`)                                            |
 | GitHub Actions — monthly report (`report.yml`)   | ✅ Working (scheduled 28th of each month + `workflow_dispatch`)             |
@@ -37,7 +35,7 @@ Umuzi has a growing body of operational documentation including meeting guidelin
 
 - **Staff** type a question in a Slack channel (mentioning `@Zazu`) or DM the bot directly (e.g. _"What is the process for setting KPAs?"_).
 - The system converts the question into a 768-dim embedding, searches the vector database for the most relevant document chunks, fetches **all chunks** from every matched document (document expansion), and feeds the full context into Google Gemini to produce a concise answer **with citations** (source title + GitHub link + relevance %).
-- A **slash command** (`/ask <question>`) works in any channel without needing to @-mention the bot.
+
 - **Ops & Leadership** can review the `questions_asked` table to see what topics people ask about most, identifying documentation gaps. A formatted Gemini-written report is automatically posted to the configured Slack channel on the **28th of every month**.
 
 ## Current Project Status
@@ -45,11 +43,11 @@ Umuzi has a growing body of operational documentation including meeting guidelin
 The full system is **production-ready** end-to-end:
 
 - **Next.js 16 + TypeScript** project is bootstrapped and compiling.
-- **Database layer** is complete — PostgreSQL with pgvector, connection pooling via `pg`, typed repositories for `slab_content` and `questions_asked`, and a migration script.
-- **Content ingestion pipeline** is functional end-to-end: the `content-reader` recursively loads Markdown files from all six `content/` categories, the `chunker` splits them by `##` section headings into overlapping ~550-word chunks (≈ 730 tokens) with title context prepended, and `POST /api/ingest` orchestrates clear → chunk → embed → bulk-insert in batches of 50. Source URLs point to the canonical GitHub file location.
-- **Google Gemini integration** is complete — `embedText()`, `embedTexts()`, and `embedAllChunks()` generate 768-dim vectors via `gemini-embedding-001`; `generateText()` produces LLM answers via `gemini-2.0-flash`.
-- **RAG query pipeline** is live — `POST /api/ask` embeds the question, performs cosine similarity search (top-10, threshold 0.3), expands to all chunks of matched documents, builds an augmented prompt asking Gemini for a structured `{ answer, used_sources }` JSON response, then returns the answer with deduplicated source citations.
-- **Slack bot "Zazu"** handles Events API (`app_mention`, DM) via `POST /api/slack` and slash commands via `POST /api/ask`. Both routes ACK immediately and process in the background to satisfy Slack's 3-second timeout.
+- **Database layer** is complete — PostgreSQL with pgvector,managed via Prisma ORM with @prisma/adapter-pg for connection pooling , typed repositories for `slab_content` and `questions_asked`, and a migration script.
+- **Content ingestion pipeline** is functional end-to-end: the `content-reader` recursively loads Markdown files from all six `content/` categories, the `chunker` splits them by `##` section headings into overlapping ~550-word chunks (≈ 730 tokens) with title context prepended, and `POST /api/ingest-markdown` orchestrates clear → chunk → embed → bulk-insert in batches of 50. Source URLs point to the canonical GitHub file location.
+- **Google Gemini integration** is complete — `embedText()`, `embedTexts()`, and `embedAllChunks()` generate 768-dim vectors via `gemini-embedding-001`; `generateText()` produces LLM answers via `gemini-3-flash-preview`.
+- **RAG query pipeline** is live — `POST /api/slack` embeds the question, performs cosine similarity search (top-10, threshold 0.3), expands to all chunks of matched documents, builds an augmented prompt asking Gemini for a structured `{ answer, used_sources }` JSON response, then returns the answer with deduplicated source citations.
+- **Slack bot "Zazu"** handles Events API (`app_mention`, DM) via `POST /api/slack` . The route ACKs immediately and processes in the background to satisfy Slack's 3-second timeout.
 - **Monthly reporting** is live — `POST /api/report` fetches the last 30 days of questions, sends them to Gemini for categorisation and trend analysis, and posts a formatted summary to the configured Slack channel.
 - **104 Markdown documents** are in `content/` across six categories: `guidelines/`, `operational-processes/`, `pathways/`, `people-and-culture/`, `projects-and-initiatives/`, and `systems-and-tools/`.
 
@@ -60,9 +58,9 @@ The full system is **production-ready** end-to-end:
 | Framework        | Next.js 16 (App Router)                                     |
 | Language         | TypeScript 5                                                |
 | Database         | PostgreSQL + pgvector                                       |
-| DB Client        | `pg` (node-postgres)                                        |
-| Embeddings / LLM | Google Gemini (`gemini-embedding-001` / `gemini-2.0-flash`) |
-| Chat Interface   | Slack App (Events API + slash command)                      |
+| DB Client        | Prisma (with @prisma/adapter-pg)                                      |
+| Embeddings / LLM | Google Gemini (`gemini-embedding-001` / `gemini-3-flash-preview`) |
+| Chat Interface   | Slack App (Events API)                      |
 | CI / Automation  | GitHub Actions                                              |
 | Hosting          | Render (planned)                                            |
 | Styling          | Tailwind CSS 4                                              |
@@ -131,10 +129,10 @@ SLACK_BOT_TOKEN=your-slack-bot-token
 SLACK_CHANNEL_ID=your-slack-channel-id
 ```
 
-### 3. Run database migrations
+### 3. Generate Prisma client
 
 ```bash
-psql $DATABASE_URL -f migrations/001_initial_schema.sql
+npx prisma generate
 ```
 
 ### 4. Start the dev server
@@ -154,7 +152,7 @@ With the dev server running, trigger ingestion:
 npm run ingest
 
 # Or directly via curl
-curl -X POST http://localhost:3000/api/ingest \
+curl -X POST http://localhost:3000/api/ingest-markdown \
   -H "x-ingest-secret: your-random-secret"
 ```
 
@@ -164,7 +162,6 @@ In the [Slack API dashboard](https://api.slack.com/apps):
 
 1. **OAuth & Permissions** — add bot scopes: `chat:write`, `app_mentions:read`, `im:history`, `commands`.
 2. **Event Subscriptions** — set the request URL to `https://<your-domain>/api/slack` and subscribe to `app_mention` and `message.im` bot events.
-3. **Slash Commands** — create a `/ask` command pointing to `https://<your-domain>/api/ask`.
 4. Install the app to your workspace and copy the **Bot User OAuth Token** into `SLACK_BOT_TOKEN`.
 
 > **Local development:** Use [ngrok](https://ngrok.com/) to expose `localhost:3000` and set the tunnelled URL in your Slack App settings.
@@ -174,11 +171,9 @@ In the [Slack API dashboard](https://api.slack.com/apps):
 ```
 app/
   api/
-    ask/route.ts         → POST: slash command + JSON RAG endpoint (async ACK)
     slack/route.ts       → POST: Events API — url_verification, app_mention, DM
-    ingest/route.ts      → POST: clear DB → chunk → embed → bulk-insert
+    ingest-markdown/route.ts     → POST: clear DB → chunk → embed → bulk-insert
     report/route.ts      → POST: generate monthly Gemini report → post to Slack
-    greet/route.ts       → GET + POST: health-check / greeting endpoint
   page.tsx               → Landing page (placeholder)
   layout.tsx             → Root layout
 content/
@@ -191,7 +186,7 @@ content/
 lib/
   chunker.ts             → Section-aware chunking (## headings) with overlap
   content-reader.ts      → Recursive Markdown file loader from content/
-  db.ts                  → pg Pool, query helper, graceful shutdown
+  prisma.ts              → Prisma client singleton
   db-types.ts            → TypeScript interfaces for DB rows
   embeddings.ts          → Batch embedding of content chunks via Gemini
   gemini.ts              → Gemini client: embedText / embedTexts / generateText
@@ -205,8 +200,11 @@ lib/
     questions-asked.ts   → CRUD + analytics for questions_asked
 migrations/
   001_initial_schema.sql → pgvector extension, tables, HNSW + B-tree indexes
+prisma/
+  schema.prisma          → Prisma schema
+  prisma.config.ts       → Prisma configuration
 scripts/
-  ingest.ts              → CLI trigger for POST /api/ingest
+  ingest.ts              → CLI trigger for POST /api/ingest-markdown
 .github/
   workflows/
     ingest.yml           → Manual re-ingest via workflow_dispatch
@@ -217,34 +215,26 @@ scripts/
 
 | Method | Route         | Auth                           | Description                                             |
 | ------ | ------------- | ------------------------------ | ------------------------------------------------------- |
-| `POST` | `/api/ask`    | None (Slack signs requests)    | Slash command (`form-encoded`) or direct JSON RAG query |
 | `POST` | `/api/slack`  | None (Slack signs requests)    | Events API: `url_verification`, `app_mention`, DM       |
-| `POST` | `/api/ingest` | `x-ingest-secret` header       | Full re-ingest: load → chunk → embed → store            |
+| `POST` | `/api/ingest-markdown` | `x-ingest-secret` header       | Full re-ingest: load → chunk → embed → store            |
 | `POST` | `/api/report` | `{ "secretCode": "..." }` body | Generate monthly usage report and post to Slack         |
-| `GET`  | `/api/greet`  | None                           | Health-check — returns a greeting JSON                  |
-| `POST` | `/api/greet`  | None                           | Slack slash-command version of the health-check         |
 
-### POST /api/ask — JSON example
-
+### POST /api/ingest-markdown — curl example
 ```bash
-curl -X POST http://localhost:3000/api/ask \
-  -H "Content-Type: application/json" \
-  -d '{"question": "What are the guidelines for no-meeting Wednesdays?", "userId": "alice"}'
+curl -X POST http://localhost:3000/api/ingest-markdown \
+  -H "x-ingest-secret: your-random-secret"
 ```
 
 Response:
-
 ```json
 {
-  "text": "No-meeting Wednesdays are protected deep-work days...",
-  "sources": [
-    {
-      "title": "No-Meeting Wednesdays",
-      "chunk_text": "...",
-      "similarity": 0.87,
-      "slab_url": "https://github.com/Umuzi-org/umuzi-single-source-of-truth/blob/main/content/operational-processes/no-meeting-wednesdays.md"
-    }
-  ]
+  "message": "Ingestion complete (with embeddings)",
+  "documentsFound": 104,
+  "chunksCreated": 474,
+  "embeddingsComputed": 474,
+  "previousRecordsDeleted": 474,
+  "recordsInserted": 474,
+  "totalRecordsInDb": 474
 }
 ```
 
@@ -252,7 +242,7 @@ Response:
 
 ### `ingest.yml` — Manual Re-ingest
 
-Triggered manually via **Actions → Ingest Content → Run workflow**. Checks out the repo, installs `tsx`, and calls `scripts/ingest.ts` which POSTs to `HOST_URL/api/ingest`.
+Triggered manually via **Actions → Ingest Content → Run workflow**. Checks out the repo, installs `tsx`, and calls `scripts/ingest.ts` which POSTs to `HOST_URL/api/ingest-markdown`.
 
 **Required repository secrets:** `HOST_URL`, `INGEST_SECRET_CODE`
 
