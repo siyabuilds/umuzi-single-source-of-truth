@@ -1,12 +1,15 @@
-// Re-export all database utilities
-export { default as pool, query, getClient, closePool } from "./db";
+// Re-export database utilities
+export { default as prisma } from "./prisma";
 export * from "./db-types";
 export * as slabContentRepo from "./repositories/slab-content";
+export * as googleDocsContentRepo from "./repositories/google-docs-content";
 export * as questionsRepo from "./repositories/questions-asked";
 
 // Content ingestion utilities
 export { loadAllDocuments } from "./content-reader";
 export type { MarkdownDocument } from "./content-reader";
+export { loadAllGoogleDocs } from "./google-docs-reader";
+export type { GoogleDoc } from "./google-docs-reader";
 export { chunkDocument, chunkAllDocuments } from "./chunker";
 export type { ContentChunk } from "./chunker";
 
