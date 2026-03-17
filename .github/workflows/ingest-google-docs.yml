@@ -15,8 +15,14 @@ jobs:
         with:
           node-version: 20
 
+      - name: Install dependencies
+        run: npm ci
+
       - name: Trigger Google Docs ingestion
         env:
           HOST_URL: ${{ secrets.HOST_URL }}
           INGEST_SECRET_CODE: ${{ secrets.INGEST_SECRET_CODE }}
+          GOOGLE_SERVICE_ACCOUNT_EMAIL: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_EMAIL }}
+          GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY }}
+          GOOGLE_DRIVE_FOLDER_ID: ${{ secrets.GOOGLE_DRIVE_FOLDER_ID }}
         run: npx tsx scripts/ingest-google-docs.ts
