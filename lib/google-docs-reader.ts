@@ -1,6 +1,7 @@
 // Reads Google Docs from a configured Drive folder and exports them as Markdown.
 // Uses a service account for authentication — no human login required.
 // The GOOGLE_DRIVE_FOLDER_ID env variable determines which folder to read from.
+// Supports recursive folder traversal — will find docs in subfolders too.
 
 import { google } from "googleapis";
 
@@ -34,29 +35,44 @@ export interface GoogleDoc {
   url: string;
 }
 
-// List all Google Docs in the configured Drive folder
+// List all Google Docs in a folder and its subfolders recursively.
+// Takes a drive instance to avoid creating a new auth client on every recursive call.
 async function listDocsInFolder(
   folderId: string,
+  drive: ReturnType<typeof google.drive>,
 ): Promise<{ id: string; title: string }[]> {
-  const auth = getAuthClient();
-  const drive = google.drive({ version: "v3", auth });
+  const docs: { id: string; title: string }[] = [];
 
-  const response = await drive.files.list({
+  // Find all Google Docs in this folder
+  const docsResponse = await drive.files.list({
     q: `'${folderId}' in parents and mimeType='application/vnd.google-apps.document' and trashed=false`,
     fields: "files(id, name)",
   });
 
-  return (response.data.files ?? []).map((file) => ({
-    id: file.id!,
-    title: file.name!,
-  }));
+  for (const file of docsResponse.data.files ?? []) {
+    docs.push({ id: file.id!, title: file.name! });
+  }
+
+  // Find all subfolders in this folder
+  const foldersResponse = await drive.files.list({
+    q: `'${folderId}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false`,
+    fields: "files(id, name)",
+  });
+
+  // Recursively search each subfolder and add its docs to the list
+  for (const folder of foldersResponse.data.files ?? []) {
+    const subDocs = await listDocsInFolder(folder.id!, drive);
+    docs.push(...subDocs);
+  }
+
+  return docs;
 }
 
 // Export a single Google Doc as Markdown using the Drive export endpoint
-async function exportDocAsMarkdown(docId: string): Promise<string> {
-  const auth = getAuthClient();
-  const drive = google.drive({ version: "v3", auth });
-
+async function exportDocAsMarkdown(
+  docId: string,
+  drive: ReturnType<typeof google.drive>,
+): Promise<string> {
   const response = await drive.files.export(
     {
       fileId: docId,
@@ -68,7 +84,8 @@ async function exportDocAsMarkdown(docId: string): Promise<string> {
   return response.data as string;
 }
 
-// Load all Google Docs from the configured Drive folder and return them with their content
+// Load all Google Docs from the configured Drive folder and return them with their content.
+// Searches recursively through subfolders.
 export async function loadAllGoogleDocs(): Promise<GoogleDoc[]> {
   const folderId = process.env.GOOGLE_DRIVE_FOLDER_ID;
 
@@ -78,7 +95,11 @@ export async function loadAllGoogleDocs(): Promise<GoogleDoc[]> {
     );
   }
 
-  const files = await listDocsInFolder(folderId);
+  // Create a single auth client and drive instance to reuse across all recursive calls
+  const auth = getAuthClient();
+  const drive = google.drive({ version: "v3", auth });
+
+  const files = await listDocsInFolder(folderId, drive);
 
   if (files.length === 0) {
     return [];
@@ -90,7 +111,7 @@ export async function loadAllGoogleDocs(): Promise<GoogleDoc[]> {
 
   for (const file of files) {
     console.log(`  Exporting: ${file.title}`);
-    const content = await exportDocAsMarkdown(file.id);
+    const content = await exportDocAsMarkdown(file.id, drive);
     docs.push({
       id: file.id,
       title: file.title,
