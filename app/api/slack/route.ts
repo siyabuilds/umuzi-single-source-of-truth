@@ -195,9 +195,11 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ ok: true });
     }
 
-    // 2b. Direct message to the bot
+    
+    // 2b. Direct message to the bot — threads are supported in DMs too
     if (event.type === "message" && event.channel_type === "im") {
       const question = (event.text ?? "").trim();
+      const threadTs: string | undefined = event.thread_ts ?? event.ts;
 
       if (!question) {
         await postSlackMessage(
@@ -207,8 +209,8 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ ok: true });
       }
 
-      // ACK immediately, process in background — no threadTs for DMs
-      processAndReply(question, userId, channel);
+      // ACK immediately, process in background
+      processAndReply(question, userId, channel, threadTs);
       return NextResponse.json({ ok: true });
     }
   }

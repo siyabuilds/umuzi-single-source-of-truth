@@ -112,29 +112,22 @@ async function rewriteQuestion(
   question: string,
   history: ConversationMessage[],
 ): Promise<string> {
-  // No history — no need to rewrite
-  if (history.length === 0) return question;
-
   const historyText = history
     .map((m) => `${m.role === "user" ? "User" : "Zazu"}: ${m.text}`)
     .join("\n");
 
-  const prompt = `You are helping rewrite a follow-up question into a standalone search query.
+  const prompt = `You are helping rewrite a user's question into an optimised standalone search query.
 The query will be used to search a vector embedding database of internal Umuzi documents.
-Make the query specific, keyword-rich, and self-contained — it should make sense without any prior context.
+Make the query specific, keyword-rich, and self-contained.
 Return ONLY the rewritten query, nothing else. No explanation, no punctuation at the end.
-
-Conversation history:
-${historyText}
-
-Follow-up question: ${question}
+${history.length > 0 ? `\nConversation history:\n${historyText}\n` : ""}
+User question: ${question}
 
 Rewritten standalone query:`;
 
   const rewritten = await generateText(prompt);
   return rewritten.trim() || question;
 }
-
 // Helper function to build the prompt for the LLM, combining the question,
 // retrieved context chunks, and conversation history.
 function buildPrompt(
@@ -200,8 +193,7 @@ export async function askQuestion(
   history: ConversationMessage[] = [],
 ): Promise<RAGResult> {
   // 1. Rewrite the question if there is conversation history
-  const searchQuery =
-    history.length > 0 ? await rewriteQuestion(question, history) : question;
+ const searchQuery = await rewriteQuestion(question, history);
 
   console.log(`Search query: "${searchQuery}"`);
 
