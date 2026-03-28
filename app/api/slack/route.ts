@@ -3,12 +3,12 @@ import { askQuestion } from "../../../lib/rag";
 import type { ConversationMessage } from "../../../lib/rag";
 import { insertQuestion, countQuestionsByUser } from "../../../lib/repositories/questions-asked";
 import { mdToSlack, formatSources } from "../../../lib/slack-format";
-
+ 
 /** Strip the `<@BOTID>` mention prefix so we get a clean question. */
 function stripMention(text: string): string {
   return text.replace(/<@[A-Z0-9]+>/g, "").trim();
 }
-
+ 
 // Post a Slack message via chat.postMessage. Replies in a thread when thread_ts is provided.
 async function postSlackMessage(
   channel: string,
@@ -19,7 +19,7 @@ async function postSlackMessage(
   if (threadTs) {
     payload.thread_ts = threadTs;
   }
-
+ 
   const res = await fetch("https://slack.com/api/chat.postMessage", {
     method: "POST",
     headers: {
@@ -28,12 +28,12 @@ async function postSlackMessage(
     },
     body: JSON.stringify(payload),
   });
-
+ 
   if (!res.ok) {
     console.error("chat.postMessage HTTP error:", res.status, await res.text());
   }
 }
-
+ 
 /**
  * Fetch the conversation history from a Slack thread.
  * Returns the previous messages as ConversationMessage objects.
@@ -52,22 +52,22 @@ async function fetchThreadHistory(
       },
     },
   );
-
+ 
   if (!res.ok) {
     console.error("conversations.replies HTTP error:", res.status);
     return [];
   }
-
+ 
   const data = await res.json();
-
+ 
   if (!data.ok || !Array.isArray(data.messages)) {
     console.error("conversations.replies error:", data.error);
     return [];
   }
-
+ 
   // Exclude the last message (that's the current question being processed)
   const previousMessages = data.messages.slice(0, -1);
-
+ 
   return previousMessages
     .filter((m: { text?: string }) => m.text?.trim())
     .map((m: { user?: string; bot_id?: string; text: string }) => ({
@@ -76,7 +76,7 @@ async function fetchThreadHistory(
       text: stripMention(m.text).trim(),
     })) as ConversationMessage[];
 }
-
+ 
 /**
  * Get the bot's own user ID from the Slack API.
  * Used to identify which messages in a thread are from the bot.
@@ -87,13 +87,13 @@ async function getBotUserId(): Promise<string> {
       Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}`,
     },
   });
-
+ 
   const data = await res.json();
   return data.user_id ?? "";
 }
-
+ 
 // Background processor (fire-and-forget)
-
+ 
 /**
  * Runs the full RAG pipeline and posts the answer back into the
  * Slack channel / DM where the question originated.
@@ -109,38 +109,38 @@ async function processAndReply(
     // 1. Check if this user has ever asked a question before
     const previousCount = await countQuestionsByUser(userId);
     const isFirstTimeUser = previousCount === 0;
-
-    // 2. Log the question regardless (Dan confirmed this tradeoff is fine)
+ 
+    // 2. Log the question regardless (first message is stored, tradeoff accepted)
     await insertQuestion({ user_id: userId, question_text: question });
-
+ 
     // 3. First-time users get a privacy notice instead of an answer
     if (isFirstTimeUser) {
       await postSlackMessage(
         channel,
-        `Hey, welcome! Just so you know, questions you ask me are logged so we can keep improving the knowledge base over time.\n\n` +
-        `Go ahead and ask away.`,
+        `Hey, welcome! Just so you know, questions you ask me are logged so we can keep improving the knowledge base over time.\n\nGo ahead and ask away.`,
         threadTs,
       );
       return;
     }
-
-    // 4. Fetch thread history for conversational context
+ 
+    // 4. Fetch thread history for conversational context (channels/explicit DM threads only)
     let history: ConversationMessage[] = [];
     if (threadTs) {
       const botUserId = await getBotUserId();
       history = await fetchThreadHistory(channel, threadTs, botUserId);
     }
-
+ 
     // 5. Run RAG with conversation history
     const { answer, sources } = await askQuestion(question, 10, history);
-
+ 
     // 6. Format response with sources
     const sourceList = formatSources(sources);
+ 
     const slackAnswer = mdToSlack(answer);
     const text = sourceList
       ? `${slackAnswer}\n\n*Sources:*\n${sourceList}`
       : slackAnswer;
-
+ 
     // 7. Send to Slack (threaded when threadTs is available)
     await postSlackMessage(channel, text, threadTs);
   } catch (error) {
@@ -152,9 +152,9 @@ async function processAndReply(
     );
   }
 }
-
+ 
 // Route handler
-
+ 
 /**
  * POST /api/slack
  *
@@ -169,66 +169,68 @@ async function processAndReply(
  */
 export async function POST(req: NextRequest) {
   const body = await req.json();
-
+ 
   // 1. URL verification (Slack setup handshake)
   if (body.type === "url_verification") {
     return NextResponse.json({ challenge: body.challenge });
   }
-
+ 
   // 2. Event callbacks
   if (body.type === "event_callback") {
     const event = body.event;
     if (!event) {
       return NextResponse.json({ ok: true });
     }
-
+ 
     // Ignore messages from bots (avoid infinite loops)
     if (event.bot_id || event.subtype === "bot_message") {
       return NextResponse.json({ ok: true });
     }
-
+ 
     const userId: string = event.user ?? "anonymous";
     const channel: string = event.channel;
-
+ 
     // 2a. @mention in a channel — reply in a thread under the original message
     if (event.type === "app_mention") {
       const question = stripMention(event.text ?? "");
       const threadTs: string = event.thread_ts ?? event.ts;
-
+ 
       if (!question) {
         await postSlackMessage(
           channel,
-          "👋 Hey! Ask me a question after the mention, e.g. `@Zazu How do I apply for leave?`",
+          "Hey! Ask me a question after the mention, e.g. `@Zazu How do I apply for leave?`",
           threadTs,
         );
         return NextResponse.json({ ok: true });
       }
-
+ 
       // ACK immediately, process in background
       processAndReply(question, userId, channel, threadTs);
       return NextResponse.json({ ok: true });
     }
-
-
-    // 2b. Direct message to the bot — threads are supported in DMs too
+ 
+    // 2b. Direct message to the bot — reply directly in the DM conversation.
+    // We only use thread_ts if the user is explicitly inside a thread in the DM,
+    // otherwise replies go straight into the conversation without threading.
     if (event.type === "message" && event.channel_type === "im") {
       const question = (event.text ?? "").trim();
-      const threadTs: string | undefined = event.thread_ts ?? event.ts;
-
+      const threadTs: string | undefined = event.thread_ts;
+ 
       if (!question) {
         await postSlackMessage(
           channel,
-          "👋 Hi there! Go ahead and ask me anything.",
+          "Hi there! Go ahead and ask me anything.",
         );
         return NextResponse.json({ ok: true });
       }
-
+ 
       // ACK immediately, process in background
       processAndReply(question, userId, channel, threadTs);
       return NextResponse.json({ ok: true });
     }
   }
-
+ 
   // Fallback
   return NextResponse.json({ ok: true });
 }
+ 
