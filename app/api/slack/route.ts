@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { askQuestion } from "../../../lib/rag";
 import type { ConversationMessage } from "../../../lib/rag";
-import { insertQuestion } from "../../../lib/repositories/questions-asked";
+import { insertQuestion, countQuestionsByUser } from "../../../lib/repositories/questions-asked";
 import { mdToSlack, formatSources } from "../../../lib/slack-format";
 
 /** Strip the `<@BOTID>` mention prefix so we get a clean question. */
@@ -106,28 +106,42 @@ async function processAndReply(
   threadTs?: string,
 ) {
   try {
-    // 1. Log the question
+    // 1. Check if this user has ever asked a question before
+    const previousCount = await countQuestionsByUser(userId);
+    const isFirstTimeUser = previousCount === 0;
+
+    // 2. Log the question regardless (Dan confirmed this tradeoff is fine)
     await insertQuestion({ user_id: userId, question_text: question });
 
-    // 2. Fetch thread history for conversational context
+    // 3. First-time users get a privacy notice instead of an answer
+    if (isFirstTimeUser) {
+      await postSlackMessage(
+        channel,
+        `Hey, welcome! Just so you know, questions you ask me are logged so we can keep improving the knowledge base over time.\n\n` +
+        `Go ahead and ask away.`,
+        threadTs,
+      );
+      return;
+    }
+
+    // 4. Fetch thread history for conversational context
     let history: ConversationMessage[] = [];
     if (threadTs) {
       const botUserId = await getBotUserId();
       history = await fetchThreadHistory(channel, threadTs, botUserId);
     }
 
-    // 3. Run RAG with conversation history
+    // 5. Run RAG with conversation history
     const { answer, sources } = await askQuestion(question, 10, history);
 
-    // 4. Format response with sources
+    // 6. Format response with sources
     const sourceList = formatSources(sources);
-
     const slackAnswer = mdToSlack(answer);
     const text = sourceList
       ? `${slackAnswer}\n\n*Sources:*\n${sourceList}`
       : slackAnswer;
 
-    // 5. Send to Slack (threaded when threadTs is available)
+    // 7. Send to Slack (threaded when threadTs is available)
     await postSlackMessage(channel, text, threadTs);
   } catch (error) {
     console.error("Error processing Slack event:", error);
@@ -195,7 +209,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ ok: true });
     }
 
-    
+
     // 2b. Direct message to the bot — threads are supported in DMs too
     if (event.type === "message" && event.channel_type === "im") {
       const question = (event.text ?? "").trim();
